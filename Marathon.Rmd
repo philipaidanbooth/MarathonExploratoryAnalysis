@@ -1,0 +1,532 @@
+---
+title: "Marathon Exploratory Analysis"
+author: "Philip Booth"
+date: "2024-05-6"
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+```
+
+Load in libraries and data frame
+
+```{r,include=TRUE}
+
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(jsonlite)
+library(hms)
+library(lubridate)
+library(stringr)
+library(reticulate)
+library(tidyr)
+
+Garmin_df <-read.csv("Garmin_Running.csv")
+```
+
+# Introduction
+
+This analysis focuses on exploring the training metrics recorded during my preparation for a marathon, with a particular emphasis on examining my improvement over time, and understanding the impact of a mid-training injury on my performance. My training data was recorded using a Garmin watch, and for this analysis, I will be focusing on the following key metrics: date, distance, time, average heart rate, and average pace.
+
+In addition, I created two categorical metrics: **Categorical Distance**, which classifies runs as short (sub 5 miles), medium (between 5 and 10 miles), and long (greater than 10 miles), and **Heart Rate Zones**, which categorize the intensity of each run based on average heart rate (Zones 1 to 5).
+
+The primary goal of this analysis is to assess my running progress across different phases of training, including how my average pace changed throughout the program and how the injury I sustained affected this progression. Additionally, I aim to determine whether I tend to excel at specific running distances or if certain distances show improvement sooner than others.
+
+The data used in this analysis was extracted via the Garmin API, cleaned to remove any misrecorded runs, such as accidental starts or non-training activities, and filtered to focus on the relevant period of the training plan. For those interested in extracting their own Garmin data, more information on the API can be found here [Garmin API support](https://support.garmin.com/en-US/?faq=qzf6fPRX2r6kxlwI3zFh9A) , or you can contact me via email at paboot26\@colby.edu for help.
+
+```{r,include=TRUE}
+#Clean Garmin Data
+Garmin_df_clean <- Garmin_df %>% 
+  mutate(date_time = ymd_hms(Date),
+         date_cal = as_date(date_time),
+         Time_hms = as_hms(Time),
+         temp = ymd_hms(paste("2000-12-12 0", Avg.Pace)),
+         Distance = as.numeric(Distance),
+         cat_dist = case_when(Distance <= 5.0 ~ 'short',
+                              Distance > 5.0 & Distance < 10.0 ~ 'medium',
+                              Distance >= 10.0 ~ 'long'),
+         HR_zone = case_when(Avg.HR <120 ~ 'Zone_1',
+                             Avg.HR >=120 & Avg.HR < 140 ~ 'Zone_2',
+                             Avg.HR >= 140  & Avg.HR < 160 ~ 'Zone_3',
+                             Avg.HR >= 160  & Avg.HR < 180 ~ 'Zone_4',
+                             Avg.HR >= 180  & Avg.HR < 200 ~ 'Zone_5'),
+         pace = (temp - ymd_hms("2000-12-12 0:0:0")) / dseconds()) %>% 
+  filter(Activity.Type != "Indoor Rowing",
+         Activity.Type != "Indoor Cycling",
+         Activity.Type != "Other",
+         pace < 900,
+         date_cal> as.Date("2023-11-10"), 
+         Distance != 620,
+         Time_hms > as_hms("00:10:00")) %>% 
+  arrange(Avg.Pace)
+
+
+
+
+# sugarloaf color palette 
+sugarloaf_colors <- c("#1b5e20", "#64b5f6", "#e65100", "#8d6e63")
+# save csv file
+write.csv(Garmin_df_clean, file = "Garmin_clean.csv", row.names = FALSE)
+```
+
+## Summary Scatter Plot
+
+```{python,echo=FALSE, results='hide', include=FALSE}
+import csv
+import plotly.graph_objects as go
+import plotly.express as px
+import numpy as np
+import pandas as pd
+import plotly.io as pio
+
+# Set renderer to 'notebook' or 'iframe' to avoid double rendering
+# pio.renderers.default = 'iframe'
+
+# Display the plot
+fig = go.Figure()
+
+df = pd.read_csv('Garmin_clean2.csv')
+
+# Convert Avg. Pace from MM:SS into HH:MM:SS 
+df['Avg.Pace'] = '00:' + df['Avg.Pace'].astype(str)  # Add '00:' for hours
+
+# Convert "Avg.Pace" to a time object (in seconds)
+df['Avg Moving Pace'] = pd.to_timedelta(df['Avg.Pace']).dt.total_seconds()
+
+# Convert the "Date" column to datetime format
+df['Date'] = pd.to_datetime(df['Date'])
+
+# Filter out poorly recorded data
+pace_to_remove = '00:10:52'
+df = df[~(df['Avg.Pace'] == pace_to_remove)]
+
+# Define function to create y-ticks and labels
+def make_pace_ylabels(ymin=360, ymax=720, step=30):
+    y_ticks = np.arange(ymin, ymax, step)
+    labels = [f"{int(y // 60):02}:{int(y % 60):02}" for y in y_ticks]
+    return y_ticks, labels
+
+# Create plot with average pace over time
+fig.add_trace(go.Scatter(
+    x=df['Date'],
+    y=df['Avg Moving Pace'],
+    mode='markers',
+    marker=dict(
+        size=df['Distance'],  # Bubble size represents distance
+        sizemode='area',
+        sizeref=2. * max(df['Distance']) / (40. ** 2),
+        sizemin=4
+    ),
+    text=df['Distance'].apply(lambda d: f"{d} miles") + '<br>' +
+         df['Date'].apply(lambda d: d.strftime('%m-%d-%Y')),
+    hoverinfo='text',
+    name='Avg Pace'
+))
+
+# Get custom y-ticks and labels
+y_ticks, y_labels = make_pace_ylabels()
+
+# Update layout
+fig.update_layout(
+    title='Fig 1: Average Pace Over Time (distance ~ radius)',
+    xaxis_title='Date',
+    yaxis_title='Avg Pace [min/mi]',
+    xaxis=dict(
+        tickformat='%b %Y',
+        tickmode='linear',
+        tick0=df['Date'].min(),
+        dtick="M1"
+    ),
+    yaxis=dict(
+        tickmode='array',
+        tickvals=y_ticks,
+        ticktext=y_labels,
+    )
+)
+```
+
+```{python}
+# import csv
+# import plotly.graph_objects as go
+# import plotly.express as px
+# import numpy as np
+# import pandas as pd
+# import plotly.io as pio
+# 
+# # Set renderer to 'notebook' or 'iframe' to avoid double rendering
+# # pio.renderers.default = 'iframe'
+# 
+# # Display the plot
+# fig = go.Figure()
+# 
+# df = pd.read_csv('Garmin_clean2.csv')
+# 
+# # Convert Avg. Pace from MM:SS into HH:MM:SS 
+# df['Avg.Pace'] = '00:' + df['Avg.Pace'].astype(str)  # Add '00:' for hours
+# 
+# # Convert "Avg.Pace" to a time object (in seconds)
+# df['Avg Moving Pace'] = pd.to_timedelta(df['Avg.Pace']).dt.total_seconds()
+# 
+# # Convert the "Date" column to datetime format
+# df['Date'] = pd.to_datetime(df['Date'])
+# 
+# # Filter out poorly recorded data
+# pace_to_remove = '00:10:52'
+# df = df[~(df['Avg.Pace'] == pace_to_remove)]
+# 
+# # Define function to create y-ticks and labels
+# def make_pace_ylabels(ymin=360, ymax=720, step=30):
+#     y_ticks = np.arange(ymin, ymax, step)
+#     labels = [f"{int(y // 60):02}:{int(y % 60):02}" for y in y_ticks]
+#     return y_ticks, labels
+# 
+# # Create plot with average pace over time
+# fig.add_trace(go.Scatter(
+#     x=df['Date'],
+#     y=df['Avg Moving Pace'],
+#     mode='markers',
+#     marker=dict(
+#         size=df['Distance'],  # Bubble size represents distance
+#         sizemode='area',
+#         sizeref=2. * max(df['Distance']) / (40. ** 2),
+#         sizemin=4
+#     ),
+#     text=df['Distance'].apply(lambda d: f"{d} miles") + '<br>' +
+#          df['Date'].apply(lambda d: d.strftime('%m-%d-%Y')),
+#     hoverinfo='text',
+#     name='Avg Pace'
+# ))
+# 
+# # Get custom y-ticks and labels
+# y_ticks, y_labels = make_pace_ylabels()
+# 
+# # Update layout
+# fig.update_layout(
+#     title='Fig 1: Average Pace Over Time (distance ~ radius)',
+#     xaxis_title='Date',
+#     yaxis_title='Avg Pace [min/mi]',
+#     xaxis=dict(
+#         tickformat='%b %Y',
+#         tickmode='linear',
+#         tick0=df['Date'].min(),
+#         dtick="M1"
+#     ),
+#     yaxis=dict(
+#         tickmode='array',
+#         tickvals=y_ticks,
+#         ticktext=y_labels,
+#     )
+# )
+fig.show()
+```
+
+I developed this initial plot using Python's Plotly library, as it effectively handles multiple variables, including distance, which a simple bivariate scatterplot cannot capture. This plot helps to illustrate the overall pattern of the training data. Notably, there is a break in continuity from March to April, reflecting my injury setback due to pulling my hamstring. I sustained the injury while playing for Colby’s club soccer team, which create a significant pause in my marathon training. Despite this, I resumed training and learned that acknowledging the injury is necessary for understanding the complete story of my marathon journey.
+
+## Further Summary Data
+
+```{r}
+
+
+# Histogram of Distances
+ggplot(Garmin_df_clean, aes(x = cat_dist)) + 
+  geom_text(stat = 'count', aes(label = ..count..), vjust = -0.5) +
+  geom_bar(fill = sugarloaf_colors[4]) + 
+  ggtitle("Distances") + 
+  xlab("Run Types") + 
+  ylab("Frequency")
+
+# Histogram of Average HR
+ggplot(Garmin_df_clean, aes(x = Avg.HR)) + 
+  geom_histogram(binwidth = 2, fill = sugarloaf_colors[2]) + 
+  ggtitle("Average HR") + 
+  xlab("Heart Rate (bpm)") + 
+  ylab("Frequency")
+
+# Boxplot of HR Zones
+ggplot(Garmin_df_clean, aes(x = HR_zone, y = Avg.HR)) + 
+  geom_boxplot(fill = sugarloaf_colors[4]) + 
+  ggtitle("Average HR Distribution") + 
+  xlab("Heart Rate Zones") + 
+  ylab("Heart Rate (bpm)")
+
+
+```
+
+Breaking down each plot one by one, the bar plot of runs categorized by distance indicates that I ran 28 short runs, 16 medium length runs, and 9 long runs. I did not have a specific training plan other than that I should run at least on long run per week. I chose a less strict training plan because Haruki Murakami inspired me to in his book *What I Talk About When I Talk About Running*. He had run a marathon every year for 23 years and his training plan was to simply run everyday he could. Moving on, the following histogram captures the distibution of my average heart rate during every run. As you can see my heart rate is relatively high for long distance. I have no explanation for this, and it was a challenge to understand when factoring into my marathon prep. After realizing the oddly high distribution of my heart rate, I created another column in the data frame called HR_zone. It categorizes the heart rate column into categories beased on the 5 heart rate zones. The final descriptive plot is a boxplot showing the distribution of all my heart rate zones during training.
+
+Breaking down each plot individually, the bar plot of runs categorized by distance indicates that I completed 28 short runs, 16 medium-length runs, and 9 long runs. I followed a less structured training plan, focusing primarily on consistency and ensuring at least one long run per week.
+
+The following histogram captures the distribution of my average heart rate during each run, revealing a relatively BPM even for long-distance runs. This pattern prompted me to categorized the heart rate data into five heart rate zones. Finally, the boxplot illustrates the distribution of heart rate zones across my training, highlighting variability in intensity throughout the program.
+
+# Analysis Part #1
+
+```{r}
+SLR_model <- lm(pace ~ date_cal, data = Garmin_df_clean)
+plot(SLR_model, which = c(5))
+
+
+#Remove first date
+Garmin_df_clean2 <- Garmin_df_clean %>%
+  filter(date_cal > as.Date("2023-12-10"))
+write.csv(Garmin_df_clean2, file = "Garmin_clean2.csv", row.names = FALSE)
+
+```
+
+Before moving onto any regression trends in the data, I decided to search for potential outliers using a Residual vs. Leverage (RVL) Plot. The plot indicated that data point 6 held a large SE, however, it did not land within Cook's distance. Although it did not fall within Cook’s distance, I reviewed its context and found that it was my first run after signing up for the marathon, conducted well before the official training began. Since it's date was far from my next first training day combined with its SE being large, I concluded that I should leave it out of the model. After refitting the model, I checked the Residual vs. Fitted (RVF) Plot, which indicated no issues with heteroskedasticity, confirming that the revised model met the assumption of constant variance. This suggests the data does not need re-expression for linear regression purposes.
+
+```{r}
+#Check the validity of RVL and RVF plots
+SLR_model <- lm(pace ~ date_cal, data = Garmin_df_clean2)
+plot(SLR_model, which = c(1,5))
+```
+
+The goal of my first analysis is to explore the relationship between my training progress and the impact of my injury sustained between March and April. My previous summary statistics have prompted me to try and account for the nuance in my training segments pre and post injury. To understand how my training progress changed before and after the injury, I will use a piecewise regression approach. By comparing these two regressions with the original trend line, I will be able to discern the differences in my training throughout m marathon journey.
+
+```{r}
+ggplot(Garmin_df_clean2) + aes(date_cal, temp) + geom_point() +
+  stat_smooth(method= "lm", se=FALSE, formula = y ~ x, span=1) +
+  scale_y_datetime(date_labels = "%M:%S") + ggtitle("Avg Pace vs. Time") + 
+  xlab("Date") + ylab("Average Pace (min/mile)") 
+
+
+ggplot(Garmin_df_clean2, aes(x = date_cal, y = temp, color = date_cal > as.Date("2024-03-28"))) + geom_point() + stat_smooth(method = 'lm', se = FALSE) +
+  scale_color_manual(values = c("TRUE" = sugarloaf_colors[2], "FALSE" = sugarloaf_colors[3]), 
+                     labels = c("FALSE" = "Pre-Injury", "TRUE" = "Post-Injury"),
+                     name = "Training Segments") +
+  scale_y_datetime(date_labels = "%M:%S") +
+  ggtitle("Avg Pace vs. Time") +
+  xlab("Date") + ylab("Average Pace (min/mile)")
+
+
+pre_injury <- subset(Garmin_df_clean2, date_cal <= as.Date("2024-03-28"))
+post_injury <- subset(Garmin_df_clean2, date_cal > as.Date("2024-03-28"))
+
+# Fit separate models
+lm_before <- lm(pace ~ date_cal, data = pre_injury)
+lm_after <- lm(pace ~ date_cal, data = post_injury)
+lm_total <-  lm(pace ~ date_cal, data = Garmin_df_clean2)
+
+# Extract coefficients and construct the equations
+before_eq <- paste0("y = ", round(coef(lm_before)[2], 2), "x + ", 
+                    round(coef(lm_before)[1], 2))
+after_eq <- paste0("y = ", round(coef(lm_after)[2], 2), "x + ", 
+                   round(coef(lm_after)[1], 2))
+total_eq <- paste0("y = ", round(coef(lm_total)[2], 2), "x + ", 
+                   round(coef(lm_total)[1], 2))
+
+# Print the equations
+print(paste("Before Injury:", before_eq))
+print(paste("After Injury:", after_eq))
+print(paste("Total:", total_eq))
+
+
+```
+
+After segmenting my training periods into pre- and post-injury phases, the regression results reveal a much clearer trend of progress than the original single linear regression (SLR). The total rate of improvement for the SLR was -0.37 seconds per day, meaning my average running pace improved by 0.37 seconds each day. However, before the injury, the rate of improvement was significantly higher at -1.24 seconds per day, indicating that my pace was improving more than three times faster compared to the overall rate. Even after the injury, my progress was still nearly twice that of the total rate, with an improvement of -0.6 seconds per day.
+
+From this analysis, I learned that the gap in training time due to the injury weakened the overall trend of progress, which is reflected in the flatter slope of the total regression line. As I move on to further analysis, I will keep the impact of this injury in mind. Next, I will investigate the differences in training outcomes based on run distance.
+
+# Analysis Part #2
+
+```{r}
+Garmin_df_preinjury <- Garmin_df_clean2 %>% 
+  filter(date_cal < as.Date("2024-03-23"))
+
+ggplot(Garmin_df_preinjury) + aes(date_cal, temp) + geom_point() +
+  stat_smooth(method= "lm", se=FALSE, formula = y ~ x, span=1) +
+  scale_y_datetime(date_labels = "%M:%S") + ggtitle("Avg Pace over Time") + 
+  xlab("Date") + ylab("Average Pace (min/mile)") 
+
+model_pace <- lm(pace ~ date_cal, data = Garmin_df_preinjury)
+#summary(model_pace)
+```
+
+For this second analysis, I will narrow the focus to only the pre-injury runs to compare the progress across different run lengths. Although this reduces the number of data points, analyzing runs from a continuous training phase (without the injury interruption) provides a clearer trend in the data. The above graph illustrates all recorded running data up to March 23rd, the day of the injury.
+
+```{r,fig.width=14, fig.height=4}
+short_run  <- Garmin_df_clean2 %>% 
+  filter(cat_dist == 'short' )
+medium_run  <- Garmin_df_clean2 %>% 
+  filter(cat_dist == 'medium' )
+long_run  <- Garmin_df_clean2 %>% 
+  filter(cat_dist == 'long' )
+
+
+g1 <-ggplot(short_run) + aes(date_cal, temp) + geom_point() +
+  stat_smooth(method= "lm", se=FALSE, formula = y ~ x, span=1) +
+  scale_y_datetime(date_labels = "%M:%S") + ggtitle("Short Run") + 
+  xlab("Date") + ylab("Average Pace (min/mile)") 
+
+g2 <-ggplot(medium_run) + aes(date_cal, temp) + geom_point() +
+  stat_smooth(method= "lm", se=FALSE, formula = y ~ x, span=1) +
+  scale_y_datetime(date_labels = "%M:%S") + ggtitle("Medium Run") + 
+  xlab("Date") + ylab("Average Pace (min/mile)") 
+
+g3 <-ggplot(long_run) + aes(date_cal, temp) + geom_point() +
+  stat_smooth(method= "lm", se=FALSE, formula = y ~ x, span=1) +
+  scale_y_datetime(date_labels = "%M:%S") + ggtitle("Long Run") + 
+  xlab("Date") + ylab("Average Pace (min/mile)") 
+
+grid.arrange(g1, g2, g3, ncol = 3)
+```
+
+The scatterplots below show runs categorized by distance for my entire training period. Notably, the slope of the pace over time for long runs is close to zero, suggesting little to no improvement in long-distance pacing during training. If I were to conclude my analysis here, I'd infer that my performance in long runs did not improve significantly and even declined over time. Because the full length period of training makes it hard to glean any insights into my training, I will limit my analysis to the duration of my pre-injury period.The following plots are limited to data recorded before March 23rd.
+
+```{r,fig.width=12, fig.height=3}
+short_run  <- Garmin_df_preinjury %>% 
+  filter(cat_dist == 'short' ,
+         Distance > 2)
+medium_run  <- Garmin_df_preinjury %>% 
+  filter(cat_dist == 'medium' )
+long_run  <- Garmin_df_preinjury %>% 
+  filter(cat_dist == 'long' )
+
+
+g1 <-ggplot(short_run) + aes(date_cal, temp) + geom_point() +
+  stat_smooth(method= "lm", se=FALSE, formula = y ~ x, span=1) +
+  scale_y_datetime(date_labels = "%M:%S") + ggtitle("Short Run") + 
+  xlab("Date") + ylab("Average Pace (min/mile)") 
+
+g2 <-ggplot(medium_run) + aes(date_cal, temp) + geom_point() +
+  stat_smooth(method= "lm", se=FALSE, formula = y ~ x, span=1) +
+  scale_y_datetime(date_labels = "%M:%S") + ggtitle("Medium Run") + 
+  xlab("Date") + ylab("Average Pace (min/mile)") 
+
+g3 <-ggplot(long_run) + aes(date_cal, temp) + geom_point() +
+  stat_smooth(method= "lm", se=FALSE, formula = y ~ x, span=1) +
+  scale_y_datetime(date_labels = "%M:%S") + ggtitle("Long Run") + 
+  xlab("Date") + ylab("Average Pace (min/mile)") 
+
+grid.arrange(g1, g2, g3, ncol = 3)
+
+# Fit separate models
+lm_short <- lm(pace ~ date_cal, data = short_run)
+lm_medium <- lm(pace ~ date_cal, data = medium_run)
+lm_long <-  lm(pace ~ date_cal, data = long_run)
+
+#Extract coefficients and construct the equations
+short_eq <- paste0("y = ", round(coef(lm_short)[2], 2), "x + ", 
+                    round(coef(lm_short)[1], 2))
+medium_eq <- paste0("y = ", round(coef(lm_medium)[2], 2), "x + ", 
+                   round(coef(lm_medium)[1], 2))
+long_eq <- paste0("y = ", round(coef(lm_long)[2], 2), "x + ", 
+                   round(coef(lm_long)[1], 2))
+
+print(paste("Short Run:  ", short_eq))
+print(paste("Medium Run: ", medium_eq))
+print(paste("Long Run:   ", long_eq))
+```
+
+The improvement slopes for each run category are similar, offering no significant insights into progress unique to a specific type of run. To gain further understanding of my fitness progression, I will now analyze my heart rate over time as an indicator of fitness level.
+
+```{r,fig.width=12, fig.height=3}
+
+
+g1 <-ggplot(short_run) + aes(date_cal, Avg.HR) + geom_point() +
+  stat_smooth(method= "lm", se=FALSE, formula = y ~ x, span=1) +
+  xlab("Date") + ylab("Average Heart Rate (BPM)")
+
+g2 <-ggplot(medium_run) + aes(date_cal, Avg.HR) + geom_point() +
+  stat_smooth(method= "lm", se=FALSE, formula = y ~ x, span=1) +
+  xlab("Date") + ylab("Average Heart Rate (BPM)")
+
+g3 <-ggplot(long_run) + aes(date_cal, Avg.HR) + geom_point() +
+  stat_smooth(method= "lm", se=FALSE, formula = y ~ x, span=1) +
+  xlab("Date") + ylab("Average Heart Rate (BPM)")
+
+
+grid.arrange(g1, g2, g3, ncol = 3)
+
+
+```
+
+The clearest progression is observed from the long runs where the heart rate steadily increased across runs, likely due to incrementing mileage for each long run. In contrast, short runs kept a consistent distance of around 4-5 miles, with a median of 4.02 miles and a mean of 4.06 miles. I attribute the consistent mileage from short runs largely because I would run the same training loop for them. This consistency, combined with ample data points, makes the analysis of short runs (shown in the left graph) particularly suitable for further exploration.
+
+```{r,fig.width=10, fig.height=5}
+
+print(paste0('Median distance of Short Runs: ', median(short_run$Distance)))
+print(paste0('Mean distance of Short Runs: ',  round(mean(short_run$Distance),2)))
+
+g1 <- ggplot(short_run) + aes(date_cal, Avg.HR) + geom_point() +
+  stat_smooth(method= "loess", se=FALSE, formula = y ~ x, span=1) +
+  xlab("Date") + ylab("Average Heart Rate (BPM)") +
+  ggtitle("Average HR vs. Date ")
+
+outlier <-  short_run %>% 
+  filter(Avg.HR < 170)
+
+g2 <- ggplot(outlier) + aes(date_cal, Avg.HR) + geom_point() +
+  stat_smooth(method= "loess", se=FALSE, formula = y ~ x, span=2) +
+  xlab("Date") + ylab("Average Heart Rate (BPM)") +
+  ggtitle("Average HR vs. Date (Without Influential Point)")
+
+grid.arrange(g1,g2, ncol=2)
+
+```
+
+By fitting a **loess regression** to the data, it appears that the heart rate progression for short runs follows a curved trend. The data, with or without the influence of outliers, roughly resembles a parabolic shape. Therefore, I will fit a **quadratic model** to better capture this pattern. The model's fit is defined as: $$ AverageHeart Rate = 144.06 + 0.91(Date) - 0.01(Date)^2 +  \epsilon_{constant} $$
+```{r,fig.width=5, fig.height=5}
+
+ggplot(short_run) + aes(date_cal, Avg.HR) + geom_point() +
+  stat_smooth(method= "lm", se=FALSE, formula = y ~ x + I(x^2), span=2) +
+  xlab("Date") + ylab("Average Heart Rate (BPM)")
+
+# Convert date to numeric
+short_run$date_cal_numeric <- as.numeric(short_run$date_cal- as.Date("2024-01-01")) 
+
+#fit quadratic
+model_quadratic <- lm(Avg.HR ~ date_cal_numeric + I(date_cal_numeric^2), data = short_run)
+#summary(model_quadratic)
+
+```
+
+The quadratic fit seems to do an okay job at capturing the pattern of the data. Before concluding anything about the data, I will check the RD plot and spread location plot of this fit.
+
+## Residual Dependence Plot:
+
+
+```{r, fig.height=4, fig.width=4}
+
+ short_run$residuals <- residuals(model_quadratic)
+
+# R-D plot
+ggplot(short_run) + aes(x = date_cal_numeric, y = residuals) + 
+  geom_point() +
+  stat_smooth(method = "loess", se = FALSE, span = 1, method.args = list(degree = 1)) +
+  ggtitle("Residual-Diagnostic (R-D) Plot") + xlab("Date (days from January 1st 2024)")
+
+```
+
+The residuals in the plot above are uniformly distributed, so we satisfy the assumption that the residuals are not dependent on the Date.
+
+## Spread-Location Plot:
+
+```{r, fig.height=4, fig.width=4}
+
+# Spread-level plot
+sl2 <- data.frame( std.res = sqrt(abs(residuals(model_quadratic))),
+                   fit = predict(model_quadratic))
+
+ggplot(sl2, aes(x = fit, y = std.res)) + geom_point() +
+  stat_smooth(method = "loess", se = FALSE, span = .9,
+  method.args = list(degree = 1)) + ggtitle("Spread-Location Plot for Quadratic Fit") +
+  xlab("Fitted Values") +
+  ylab("Sqrt of Absolute Value of Standardized Residuals")
+```
+
+The Spread-Location plot above does not indicate any monotonic increase in the data, suggesting that the model does not possess heteroscedasticity. Therefore, we can conclude that the model's assumptions of constant variance are satisfied. With these conditions met, we can firmly interpret the model's results as assess the significance of the fitted quadratic relationship.
+
+# Discussion
+
+In my analysis, I used personal running data throughout my marathon training, focusing on the progression of my average pace during runs and how my heart rate varies during training runs of different lengths.
+
+I gleaned two key insights from my analysis. First, while I made steady progress in improving my average pace throughout training, I found that I progressed at a faster rate before my injury compared to training after the recovery period. From this insight, I learned how my injury impacted my overall training and its contribution to slowing my overall progress. Second, I observed an unintuitive pattern capturing my average heart rate change throughout my short runs over time. The graph shows an initial increase followed by a steady decrease in a parabolic shape. I interpret this as an indication that as I repeated the same short run enough times, my body adapted, and my fitness improved, resulting in a lower heart rate over time.
+
+I acknowledge that my analysis has certain limitations. The hypothesis regarding my heart rate behavior lacks a rigorous statistical foundation. In a future study, I would extend my hypothesis to include a more formal statistical model to calculate the validity of the claim. I would also be curious to apply this same analysis to another subjects running data and explore similarities and differences.
+
+To conclude, this analysis provided valuable insight into my personal training. It highlights the importance of consistent training and injury prevention when working in the context of long-term marathon training. 
